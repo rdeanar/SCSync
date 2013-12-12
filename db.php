@@ -19,7 +19,11 @@ class db{
 
     public function getLinksArray(){
         $handle = fopen($this->db_file, "r");
-        $contents = fread($handle, filesize($this->db_file));
+        if(filesize($this->db_file) > 0){
+            $contents = fread($handle, filesize($this->db_file));
+        }else{
+            $contents = '';
+        }
         fclose($handle);
 
         $array = explode(PHP_EOL,$contents);

@@ -1,4 +1,9 @@
 <?php
+/**
+ *  get.php path_to_save
+ *
+ */
+
 date_default_timezone_set('Europe/Moscow');
 ini_set('memory_limit', '256M');
 
@@ -10,8 +15,8 @@ include "php-soundcloud-master/Services/Soundcloud.php";
 class scsync
 {
 
-    public  $save_path = '/store/';
-    public  $save_local = true;
+    public $save_path = '/store/';
+    public $save_local = true;
 
     const db_links = DB_LINK;
     const db_auth = DB_AUTH;
@@ -21,14 +26,74 @@ class scsync
 
     public $sc; // API object
 
-    public $count=50;
+    public $count = 50;
 
-    public function setSavePath($local,$path){
-        $this->save_local = $local;
-        $this->save_path  = $path;
+    public static $current_download_operation = 'downloading content';
+
+    public $stat = array(0,0,0);
+
+    static function log($msg, $replace = false)
+    {
+        if ($replace) {
+            echo "\r" . $msg . "";
+        } else {
+            echo "\n" . wordwrap($msg,80) . "";
+        }
     }
 
-    public function setCount($count){
+    /**
+     * Pre progress bar
+     */
+    static function ppb(){
+        self::log('_');
+    }
+
+    public function __construct()
+    {
+        $auth = $this->getAuth();
+
+        // create client object and set access token
+        $this->sc = new Services_Soundcloud(CLIENT_ID, CLIENT_SECRET, REDIRECT_URL);
+
+        $this->sc->setCurlOptions(array(
+            CURLOPT_PROGRESSFUNCTION => array(get_class($this), 'progressCallback'),
+            CURLOPT_NOPROGRESS => false,
+            CURLOPT_RETURNTRANSFER => true,
+
+        ));
+
+        if ($auth['expires_in'] > time()) { // сессия еще валидна
+            self::log('Use saved session.');
+            $this->sc->setAccessToken($auth['access_token']);
+        } else {
+            // обновляем сессию
+            self::log('Session expired. Refreshing session.');
+            self::$current_download_operation = 'Refreshing session';
+            self::ppb();
+            $token = $this->sc->accessTokenRefresh($auth['refresh_token']);
+            $token['expires_in'] += time();
+            $db = new db(self::db_auth);
+            $db->saveAuth(serialize($token));
+        }
+        self::log('Authorization successful.');
+
+        $this->already_downloaded = $this->getLinksArray();
+    }
+
+    public function __destruct(){
+        self::log(str_repeat('-',80));
+        self::log($this->stat[0] . ' downloaded, ' . $this->stat[1] . ' skipped, ' . $this->stat[2] . ' failed');
+        self::log('');
+    }
+
+    public function setSavePath($local, $path)
+    {
+        $this->save_local = $local;
+        $this->save_path = $path;
+    }
+
+    public function setCount($count)
+    {
         $this->count = $count;
     }
 
@@ -36,56 +101,75 @@ class scsync
     {
         $i = 0;
         $j = 0;
-        $count = min( $this->count, count($stream->collection) );
+        $count = min($this->count, count($stream->collection));
         foreach ($stream->collection as $item) {
-            if($i >= $count) continue;
-            if($this->trackDownload($item->origin)) $j++;
+            if ($i >= $count) continue;
+            if ($this->trackDownload($item->origin)) $j++;
             $i++;
-            echo ($i) . '(' . ($j) . ') / ' . $count . ' records processed. ' . ceil(($i) * 100 / $count) . '%' . PHP_EOL;
+            self::log($i . ' / ' . $count . ' tracks processed. ' . ceil(($i) * 100 / $count) . '%, ' . $j . ' downloaded, ' . ($i - $j) . ' skipped');
         }
     }
 
-    public function processTracksArray($stream){
+    public function processTracksArray($stream)
+    {
         $i = 0;
         $j = 0;
-        $count = min( $this->count, count($stream) );
+        $count = min($this->count, count($stream));
         foreach ($stream as $track) {
-            if($i >= $count) continue;
-            if($this->trackDownload($track)) $j++;
+            if ($i >= $count) continue;
+            if ($this->trackDownload($track)) $j++;
             $i++;
-            echo ($i) . '(' . ($j) . ') / ' . $count . ' records processed. ' . ceil(($i) * 100 / $count) . '%' . PHP_EOL;
+            self::log($i . ' / ' . $count . ' tracks processed. ' . ceil(($i) * 100 / $count) . '%, ' . $j . ' downloaded, ' . ($i - $j) . ' skipped');
         }
 
     }
 
     public function trackDownload($track)
     {
-        if($track->kind != 'track') return false;
+        if ($track->kind != 'track') return false;
 
+        self::log( str_repeat('-',80)); // -----------------------------
+
+        self::log('Track "' . $track->title . '"');
         if (in_array($track->id, $this->already_downloaded)) {
-            echo 'Track already downloaded. Continue...'.PHP_EOL;
+            self::log('Already downloaded. Continue...');
+            $this->stat[1]++; // skipped
+            self::log( str_repeat('-',80)); // -----------------------------
             return false;
         }
 
         $downloaded_file = null;
+        $download = false;
+        $low = false;
+
         try {
-            $downloaded_file = $this->sc->download($track->id);
             $low = false;
+            self::$current_download_operation = 'Trying to download full track';
+            self::ppb();
+            $downloaded_file = $this->sc->download($track->id);
         } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {
-            echo($e->getMessage());
-            echo PHP_EOL . 'Trying to download Stream Version' . PHP_EOL;
-            $downloaded_file = file_get_contents($track->stream_url . '?client_id=' . CLIENT_ID);
+            //self::log($e->getMessage());
+            self::log('Unable to download full track.');
+        }
+
+        if (is_null($downloaded_file)) {
+            self::log('Downloading stream version');
+            $track_url = $track->stream_url . '?client_id=' . CLIENT_ID;
+            //$downloaded_file = file_get_contents($track_url);
+            self::$current_download_operation = 'Downloading stream';
+            self::ppb();
+            $downloaded_file = $this->downloadFileByUrl($track_url);
             $low = true;
         }
 
-        if ($this->save_local == true) {
-            $path = dirname(__FILE__) . $this->save_path;
-            if (!file_exists($path)) mkdir($path);
-        } else {
-            $path = $this->save_path;
-        }
-
         if (!is_null($downloaded_file)) {
+
+            if ($this->save_local == true) {
+                $path = dirname(__FILE__) . $this->save_path;
+                if (!file_exists($path)) mkdir($path);
+            } else {
+                $path = $this->save_path;
+            }
 
             $new_name = '';
             if ($track->created_at != null) {
@@ -105,14 +189,57 @@ class scsync
             $download = file_put_contents($path . $new_name, $downloaded_file);
 
             if ($download) {
-                echo 'Track "' . $track->title . '" Successfully downloaded as "' . $new_name . '"!' . PHP_EOL;
                 $this->addLink($track->id);
+                self::log('Successfully downloaded as "' . $new_name . '"!');
+                $this->stat[0]++; // downloaded
             }
         } else {
-            echo 'Unable to download "' . $track->title . '" ' . PHP_EOL;
+            self::log('Unable to download ' . ($low ? '(low)' : '(high)') . ' "' . $track->title . '" ');
+            $this->stat[2]++; // failed
+        }
+        self::log( str_repeat('-',80)); // -----------------------------
+
+        return $download ? true : false;
+
+    }
+
+    public function downloadFileByUrl($url)
+    {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        //curl_setopt($ch, CURLOPT_BUFFERSIZE,128);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+        curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, array(get_class($this), 'progressCallback'));
+        curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+
+        curl_setopt($ch, CURLOPT_HEADER, 0);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        return $response;
+    }
+
+    public function progressCallback($download_size, $downloaded, $upload_size, $uploaded)
+    {
+        if ($download_size > 0) {
+            $progress = (round($downloaded / $download_size * 1000) / 10);
+            $progress_int = round($progress);
+
+            // [*******----------][43%]
+            $pr_long = 40;
+            $pr_complete = round($pr_long * $progress_int / 100);
+            $pr_string = "[" . str_repeat('*', $pr_complete) . str_repeat('-', ($pr_long - $pr_complete)) . "][" . $progress_int . "%] " . scsync::$current_download_operation;
+
+            // scsync::log( scsync::$current_download_operation . ', precent:' .$progress. " from " . $download_size, true);
+            scsync::log($pr_string, true);
+        } else {
+            scsync::log(scsync::$current_download_operation, true);
         }
 
     }
+
 
     public function addLink($link)
     {
@@ -133,69 +260,45 @@ class scsync
 
     }
 
-    public function __construct()
+    public function ownStream()
     {
-        $auth = $this->getAuth();
-
-        // create client object and set access token
-        $this->sc = new Services_Soundcloud(CLIENT_ID, CLIENT_SECRET, REDIRECT_URL);
-
-        $expired = true; // сейчас по умолчанию сессия всегда считается устаревшей и обновляется
-
-        if ($auth['expires_in'] > time()) { // сессия еще валидна
-            echo 'Use saved session' . PHP_EOL;
-            $this->sc->setAccessToken($auth['access_token']);
-        } else {
-            // обновляем сессию
-            echo 'Refresh session' . PHP_EOL;
-            $token = $this->sc->accessTokenRefresh($auth['refresh_token']);
-            $token['expires_in'] += time();
-            $db = new db(self::db_auth);
-            $db->saveAuth(serialize($token));
-        }
-
-        $this->already_downloaded = $this->getLinksArray();
-
-
-    }
-
-
-    public function ownStream(){
         try {
+            self::log('Getting own stream');
+            self::$current_download_operation = 'Downloading own stream data';
             $stream = json_decode($this->sc->get('me/activities/tracks/affiliated'));
             $this->processStream($stream);
         } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {
-            echo 'Unknown error with message ' . $e->getMessage() . PHP_EOL;
+            self::log('Unknown error with message ' . $e->getMessage());
         }
 
     }
 
 
-    public function resolve($url){
-        return  json_decode($this->sc->get('resolve', array('url' => $url),array(CURLOPT_FOLLOWLOCATION => true)));
+    public function resolve($url)
+    {
+        return json_decode($this->sc->get('resolve', array('url' => $url), array(CURLOPT_FOLLOWLOCATION => true)));
     }
 
-    public function getUserTracks($id){
+    public function getUserTracks($id)
+    {
         try {
-            echo '/users/'.$id.'/tracks';
-            $stream = json_decode($this->sc->get('users/'.$id.'/tracks'));
+            self::log('User #' . $id);
+            $stream = json_decode($this->sc->get('users/' . $id . '/tracks'));
             $this->processTracksArray($stream);
         } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {
-            //exit($e->getMessage());
-            echo 'Unknown error with message ' . $e->getMessage() . PHP_EOL;
+            self::log('Unknown error with message ' . $e->getMessage());
         }
 
     }
 
-    public function getGroupTracks($id){
+    public function getGroupTracks($id)
+    {
         try {
-            echo '/groups/'.$id.'/tracks';
-            $stream = json_decode($this->sc->get('groups/'.$id.'/tracks'));
-            print_r($stream);
+            self::log('Group #' . $id);
+            $stream = json_decode($this->sc->get('groups/' . $id . '/tracks'));
             $this->processTracksArray($stream);
         } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {
-            //exit($e->getMessage());
-            echo 'Unknown error with message ' . $e->getMessage() . PHP_EOL;
+            self::log('Unknown error with message ' . $e->getMessage());
         }
 
     }
@@ -204,29 +307,27 @@ class scsync
 
 
 $app = new scsync();
-if(isset($argv[1])){
-    $app->setSavePath(false,$argv[1]);
+if (isset($argv[1])) {
+    $app->setSavePath(false, $argv[1]);
 }
 
-if(isset($argv[3])){
+if (isset($argv[3])) {
     $app->setCount($argv[3]);
 }
 
-if(isset($argv[2])){
-    if($argv[2]=='STREAM'){
+
+if (isset($argv[2])) {
+    if ($argv[2] == 'STREAM') {
         $app->ownStream();
-    }else{
+    } else {
         $resolve = $app->resolve($argv[2]);
         $id = $resolve->id;
-        switch($resolve->kind){
+        switch ($resolve->kind) {
             case 'track':
-            // download Track
-                //echo 'Trying to download track: '.$id;
-            $app->trackDownload($resolve);
-            break;
+                $app->trackDownload($resolve);
+                break;
             case 'user':
-            // download User stream
-            $app->getUserTracks($id);
+                $app->getUserTracks($id);
                 break;
 
             case 'playlist':
@@ -238,12 +339,13 @@ if(isset($argv[2])){
                 break;
 
             default:
-                echo 'Unknown kind: '.$resolve->kind.', id: '.$id.PHP_EOL;
-                //print_r($resolve);
+                self::log('Unknown kind: ' . $resolve->kind . ', id: ' . $id);
+            //print_r($resolve);
         }
     }
 
 }
+
 
 
 //print_r($argv);

@@ -1,4 +1,4 @@
-scsync
+SCSync
 ======
 
-Download anything
+Download anything from SoundCloud in one click 

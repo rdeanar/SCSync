@@ -597,7 +597,7 @@ class Services_Soundcloud
     {
         $url = $this->_buildUrl($path, $params);
 
-        echo PHP_EOL."URL: ".$url.PHP_EOL;
+        //echo PHP_EOL."URL: ".$url.PHP_EOL;
         return $this->_request($url, $curlOptions);
     }
 

@@ -263,8 +263,9 @@ class scsync
     public function ownStream()
     {
         try {
-            self::log('Getting own stream');
-            self::$current_download_operation = 'Downloading own stream data';
+            self::log('Own stream');
+            self::$current_download_operation = 'Getting own stream';
+            self::ppb();
             $stream = json_decode($this->sc->get('me/activities/tracks/affiliated'));
             $this->processStream($stream);
         } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {
@@ -276,6 +277,8 @@ class scsync
 
     public function resolve($url)
     {
+        self::$current_download_operation = 'Resolve content type by link';
+        self::ppb();
         return json_decode($this->sc->get('resolve', array('url' => $url), array(CURLOPT_FOLLOWLOCATION => true)));
     }
 
@@ -283,6 +286,8 @@ class scsync
     {
         try {
             self::log('User #' . $id);
+            self::$current_download_operation = 'Getting user\'s tracks';
+            self::ppb();
             $stream = json_decode($this->sc->get('users/' . $id . '/tracks'));
             $this->processTracksArray($stream);
         } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {
@@ -295,6 +300,8 @@ class scsync
     {
         try {
             self::log('Group #' . $id);
+            self::$current_download_operation = 'Getting group\'s tracks';
+            self::ppb();
             $stream = json_decode($this->sc->get('groups/' . $id . '/tracks'));
             $this->processTracksArray($stream);
         } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {

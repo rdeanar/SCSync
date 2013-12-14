@@ -1,6 +1,9 @@
 <?
 
-
+/**
+ * Class db
+ * Handle all data to store in db
+ */
 class db{
 
     public $db_file;
@@ -19,12 +22,12 @@ class db{
 
     public function getLinksArray(){
         $handle = fopen($this->db_file, "r");
-        if(filesize($this->db_file) > 0){
+        if($handle && filesize($this->db_file) > 0){
             $contents = fread($handle, filesize($this->db_file));
         }else{
             $contents = '';
         }
-        fclose($handle);
+        if($handle) fclose($handle);
 
         $array = explode(PHP_EOL,$contents);
 

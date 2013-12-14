@@ -9,7 +9,7 @@ ini_set('memory_limit', '256M');
 
 include "config.php";
 include "db.php";
-include "php-soundcloud-master/Services/Soundcloud.php";
+include "php-soundcloud/Services/Soundcloud.php";
 
 
 class scsync
@@ -30,24 +30,28 @@ class scsync
 
     public static $current_download_operation = 'downloading content';
 
-    public $stat = array(0,0,0);
+    public $stat = array(0, 0, 0);
 
     static function log($msg, $replace = false)
     {
         if ($replace) {
             echo "\r" . $msg . "";
         } else {
-            echo "\n" . wordwrap($msg,80) . "";
+            echo "\n" . wordwrap($msg, 80) . "";
         }
     }
 
     /**
      * Pre progress bar
      */
-    static function ppb(){
+    static function ppb()
+    {
         self::log('_');
     }
 
+    /**
+     *  Auth
+     */
     public function __construct()
     {
         $auth = $this->getAuth();
@@ -67,36 +71,58 @@ class scsync
             $this->sc->setAccessToken($auth['access_token']);
         } else {
             // обновляем сессию
-            self::log('Session expired. Refreshing session.');
-            self::$current_download_operation = 'Refreshing session';
-            self::ppb();
-            $token = $this->sc->accessTokenRefresh($auth['refresh_token']);
-            $token['expires_in'] += time();
-            $db = new db(self::db_auth);
-            $db->saveAuth(serialize($token));
+            self::log('Session expired. Trying to refresh session.');
+            try {
+                self::$current_download_operation = 'Refreshing session';
+                self::ppb();
+                $token = $this->sc->accessTokenRefresh($auth['refresh_token']);
+                $token['expires_in'] += time();
+                $db = new db(self::db_auth);
+                $db->saveAuth(serialize($token));
+            } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {
+                self::log('Refreshing session failed.');
+                die();
+            }
         }
         self::log('Authorization successful.');
 
         $this->already_downloaded = $this->getLinksArray();
     }
 
-    public function __destruct(){
-        self::log(str_repeat('-',80));
+    /**
+     * Print statistic
+     */
+    public function __destruct()
+    {
+        self::log(str_repeat('-', 80));
         self::log($this->stat[0] . ' downloaded, ' . $this->stat[1] . ' skipped, ' . $this->stat[2] . ' failed');
         self::log('');
     }
 
+    /**
+     * Set path to download tracks
+     * @param $local
+     * @param $path
+     */
     public function setSavePath($local, $path)
     {
         $this->save_local = $local;
         $this->save_path = $path;
     }
 
+    /**
+     * Set download limit
+     * @param $count
+     */
     public function setCount($count)
     {
         $this->count = $count;
     }
 
+    /**
+     * Download all tracks from own stream object
+     * @param $stream
+     */
     public function processStream($stream)
     {
         $i = 0;
@@ -110,12 +136,16 @@ class scsync
         }
     }
 
-    public function processTracksArray($stream)
+    /**
+     * Download all tracks from array of track objects
+     * @param $tracks
+     */
+    public function processTracksArray($tracks)
     {
         $i = 0;
         $j = 0;
-        $count = min($this->count, count($stream));
-        foreach ($stream as $track) {
+        $count = min($this->count, count($tracks));
+        foreach ($tracks as $track) {
             if ($i >= $count) continue;
             if ($this->trackDownload($track)) $j++;
             $i++;
@@ -124,17 +154,22 @@ class scsync
 
     }
 
+    /**
+     * Download  one track from track object
+     * @param $track
+     * @return bool
+     */
     public function trackDownload($track)
     {
         if ($track->kind != 'track') return false;
 
-        self::log( str_repeat('-',80)); // -----------------------------
+        self::log(str_repeat('-', 80)); // -----------------------------
 
         self::log('Track "' . $track->title . '"');
         if (in_array($track->id, $this->already_downloaded)) {
             self::log('Already downloaded. Continue...');
             $this->stat[1]++; // skipped
-            self::log( str_repeat('-',80)); // -----------------------------
+            self::log(str_repeat('-', 80)); // -----------------------------
             return false;
         }
 
@@ -197,17 +232,21 @@ class scsync
             self::log('Unable to download ' . ($low ? '(low)' : '(high)') . ' "' . $track->title . '" ');
             $this->stat[2]++; // failed
         }
-        self::log( str_repeat('-',80)); // -----------------------------
+        self::log(str_repeat('-', 80)); // -----------------------------
 
         return $download ? true : false;
 
     }
 
+    /**
+     * Download file by url (for downloading stream version of track)
+     * @param $url
+     * @return mixed
+     */
     public function downloadFileByUrl($url)
     {
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
-        //curl_setopt($ch, CURLOPT_BUFFERSIZE,128);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 
         curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, array(get_class($this), 'progressCallback'));
@@ -221,6 +260,13 @@ class scsync
         return $response;
     }
 
+    /**
+     * Progress bar handler
+     * @param $download_size
+     * @param $downloaded
+     * @param $upload_size
+     * @param $uploaded
+     */
     public function progressCallback($download_size, $downloaded, $upload_size, $uploaded)
     {
         if ($download_size > 0) {
@@ -240,19 +286,30 @@ class scsync
 
     }
 
-
+    /**
+     * Add track id in history log
+     * @param $link
+     */
     public function addLink($link)
     {
         $db = new db(self::db_links);
         $db->addLink($link);
     }
 
+    /**
+     * Get list of all track ids from history log
+     * @return array
+     */
     public function getLinksArray()
     {
         $db = new db(self::db_links);
         return $db->getLinksArray();
     }
 
+    /**
+     * Get auth from db
+     * @return mixed
+     */
     public function getAuth()
     {
         $db = new db(self::db_auth);
@@ -260,6 +317,9 @@ class scsync
 
     }
 
+    /**
+     * Download tracks from own stream
+     */
     public function ownStream()
     {
         try {
@@ -274,14 +334,26 @@ class scsync
 
     }
 
-
+    /**
+     * Resolve content by url
+     * @param $url
+     * @return mixed
+     */
     public function resolve($url)
     {
-        self::$current_download_operation = 'Resolve content type by link';
-        self::ppb();
-        return json_decode($this->sc->get('resolve', array('url' => $url), array(CURLOPT_FOLLOWLOCATION => true)));
+        try {
+            self::$current_download_operation = 'Resolve content type by link';
+            self::ppb();
+            return json_decode($this->sc->get('resolve', array('url' => $url), array(CURLOPT_FOLLOWLOCATION => true)));
+        } catch (Services_Soundcloud_Invalid_Http_Response_Code_Exception $e) {
+            self::log('Resolve failed.');
+        }
     }
 
+    /**
+     * Download user's tracks
+     * @param $id
+     */
     public function getUserTracks($id)
     {
         try {
@@ -296,6 +368,10 @@ class scsync
 
     }
 
+    /**
+     * Download group's tracks
+     * @param $id
+     */
     public function getGroupTracks($id)
     {
         try {
@@ -346,8 +422,7 @@ if (isset($argv[2])) {
                 break;
 
             default:
-                self::log('Unknown kind: ' . $resolve->kind . ', id: ' . $id);
-            //print_r($resolve);
+                scsync::log('Unknown kind: ' . $resolve->kind . ', id: ' . $id);
         }
     }
 

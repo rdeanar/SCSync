@@ -20,3 +20,7 @@ Installation and use
 11. By clicking will be opened several wizard dialogs. After you answer for all questions (like what you want to download and count) will be opened Terminal app and you will see progress of download;
 12. When download will be finished, you will see Finder window with all downloaded tracks. Profit!
 
+
+if you already made clone without "--recursive" parameter, you can run this commands to clone submodule of php implementation of soundcloud api:
+git submodule init
+git submodule update

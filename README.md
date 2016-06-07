@@ -3,6 +3,7 @@ SCSync
 
 Download anything from SoundCloud in one click
 
+Video demonstration: https://www.youtube.com/watch?v=wtbL4OtdYCY
 
 Installation and use
 ------
